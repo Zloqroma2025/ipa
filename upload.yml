@@ -1,34 +1,81 @@
-name: Upload Ready IPA to TestFlight
+name: Resign and Upload to TestFlight
 
-# Скрипт будет запускаться по кнопке вручную
 on:
   workflow_dispatch:
 
 jobs:
-  upload:
-    runs-on: macos-latest # Нужен Mac, чтобы работала утилита Apple
+  resign-and-upload:
+    runs-on: macos-latest
 
     steps:
-      - name: 📥 Скачивание файлов из репозитория
+      - name: 📥 Checkout code
         uses: actions/checkout@v4
 
-      - name: 🚀 Отправка файла в TestFlight
+      - name: 🔑 Install Certificates and Profile
+        env:
+          P12_BASE64: ${{ secrets.P12_CERTIFICATE }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          PROVISION_BASE64: ${{ secrets.PROVISIONING_PROFILE }}
+        run: |
+          # 1. Импорт сертификата
+          CERT_PATH=$RUNNER_TEMP/cert.p12
+          echo -n "$P12_BASE64" | base64 --decode -o $CERT_PATH
+          security create-keychain -p "" build.keychain
+          security import $CERT_PATH -k build.keychain -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security list-keychains -d user -s build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security unlock-keychain -p "" build.keychain
+
+          # 2. Установка профиля
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          echo -n "$PROVISION_BASE64" | base64 --decode -o ~/Library/MobileDevice/Provisioning\ Profiles/resigned.mobileprovision
+
+      - name: 🛠 Resign IPA
+        env:
+          OLD_BUNDLE_ID: "com.parts.fastauto"
+        run: |
+          # Находим наш IPA
+          IPA_NAME=$(find . -name "*.ipa" | head -n 1)
+          
+          # Распаковываем
+          unzip -q "$IPA_NAME" -d temp_resign
+          APP_PATH=$(find temp_resign/Payload -name "*.app")
+          
+          # 1. Меняем Bundle ID в Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $OLD_BUNDLE_ID" "$APP_PATH/Info.plist"
+          
+          # 2. Вытаскиваем Entitlements из профиля
+          security cms -D -i ~/Library/MobileDevice/Provisioning\ Profiles/resigned.mobileprovision > profile.plist
+          /usr/libexec/PlistBuddy -x -c 'Print :Entitlements' profile.plist > entitlements.plist
+          
+          # 3. Подменяем профиль внутри приложения
+          cp ~/Library/MobileDevice/Provisioning\ Profiles/resigned.mobileprovision "$APP_PATH/embedded.mobileprovision"
+          
+          # 4. Переподписываем (очищаем старые подписи и ставим новую)
+          rm -rf "$APP_PATH/_CodeSignature"
+          
+          # Находим имя сертификата в системе
+          CERT_NAME=$(security find-identity -v -p codesigning build.keychain | grep "Apple Distribution" | head -1 | grep -o '".*"' | sed 's/"//g')
+          echo "Использую сертификат: $CERT_NAME"
+          
+          /usr/bin/codesign -f -s "$CERT_NAME" --entitlements entitlements.plist "$APP_PATH"
+          
+          # 5. Запаковываем обратно
+          cd temp_resign
+          zip -qr ../Resigned_App.ipa Payload
+          cd ..
+
+      - name: 🚀 Upload to TestFlight
         env:
           API_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY }}
           KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
           ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
         run: |
-          # 1. Готовим ключи для Apple
           mkdir -p ~/.appstoreconnect/private_keys/
           echo "$API_KEY" > ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8
           
-          # 2. Ищем ipa файл в репозитории
-          IPA_FILE=$(find . -name "*.ipa" | head -n 1)
-          echo "Готовлю к отправке файл: $IPA_FILE"
-          
-          # 3. Отправляем в TestFlight
           xcrun altool --upload-app \
                        --type ios \
-                       --file "$IPA_FILE" \
+                       --file Resigned_App.ipa \
                        --apiKey $KEY_ID \
                        --apiIssuer $ISSUER_ID
