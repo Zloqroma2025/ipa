@@ -17,21 +17,17 @@ jobs:
           CERT_PEM: ${{ secrets.IOS_CERT_PEM }}
           PROVISION_BASE64: ${{ secrets.PROVISIONING_PROFILE }}
         run: |
-          # 1. Восстанавливаем ключи из текста
           echo "$PRIVATE_KEY" > private.key
           echo "$CERT_PEM" > cert.pem
 
-          # 2. MAC САМ собирает правильный p12 файл (с простым паролем 123456)
           openssl pkcs12 -export -out cert.p12 -inkey private.key -in cert.pem -passout pass:123456
 
-          # 3. Импортируем сертификат в систему Mac
           security create-keychain -p "" build.keychain
           security import cert.p12 -k build.keychain -P "123456" -T /usr/bin/codesign
           security list-keychains -d user -s build.keychain
           security set-keychain-settings -t 3600 -u build.keychain
           security unlock-keychain -p "" build.keychain
 
-          # 4. Установка профиля
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           echo -n "$PROVISION_BASE64" | base64 --decode -o ~/Library/MobileDevice/Provisioning\ Profiles/resigned.mobileprovision
 
@@ -39,30 +35,23 @@ jobs:
         env:
           OLD_BUNDLE_ID: "com.parts.fastauto"
         run: |
-          # Находим наш IPA
           IPA_NAME=$(find . -name "*.ipa" | head -n 1)
           
-          # Распаковываем
           unzip -q "$IPA_NAME" -d temp_resign
           APP_PATH=$(find temp_resign/Payload -name "*.app")
           
-          # Меняем Bundle ID в Info.plist
           /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $OLD_BUNDLE_ID" "$APP_PATH/Info.plist"
           
-          # Вытаскиваем Entitlements из профиля
           security cms -D -i ~/Library/MobileDevice/Provisioning\ Profiles/resigned.mobileprovision > profile.plist
           /usr/libexec/PlistBuddy -x -c 'Print :Entitlements' profile.plist > entitlements.plist
           
-          # Подменяем профиль внутри приложения
           cp ~/Library/MobileDevice/Provisioning\ Profiles/resigned.mobileprovision "$APP_PATH/embedded.mobileprovision"
           
-          # Переподписываем
           rm -rf "$APP_PATH/_CodeSignature"
           CERT_NAME=$(security find-identity -v -p codesigning build.keychain | grep "Apple Distribution" | head -1 | grep -o '".*"' | sed 's/"//g')
           echo "Использую сертификат: $CERT_NAME"
           /usr/bin/codesign -f -s "$CERT_NAME" --entitlements entitlements.plist "$APP_PATH"
           
-          # Запаковываем обратно
           cd temp_resign
           zip -qr ../Resigned_App.ipa Payload
           cd ..
