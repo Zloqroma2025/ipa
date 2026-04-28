@@ -27,6 +27,9 @@ jobs:
           security list-keychains -d user -s build.keychain
           security set-keychain-settings -t 3600 -u build.keychain
           security unlock-keychain -p "" build.keychain
+          
+          # Та самая команда, которая убирает невидимое окно с вопросом "Разрешить?"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" build.keychain
 
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           echo -n "$PROVISION_BASE64" | base64 --decode -o ~/Library/MobileDevice/Provisioning\ Profiles/resigned.mobileprovision
@@ -49,11 +52,11 @@ jobs:
           
           rm -rf "$APP_PATH/_CodeSignature"
           
-          # Ищем ЛЮБОЙ сертификат в связке ключей (он там всего один)
           CERT_NAME=$(security find-identity -v -p codesigning build.keychain | grep '"' | head -1 | grep -o '".*"' | sed 's/"//g')
           echo "Использую сертификат: $CERT_NAME"
           
-          /usr/bin/codesign -f -s "$CERT_NAME" --entitlements entitlements.plist "$APP_PATH"
+          # Добавил флаг --deep на всякий случай, чтобы подписались все вложенные папки
+          /usr/bin/codesign --deep -f -s "$CERT_NAME" --entitlements entitlements.plist "$APP_PATH"
           
           cd temp_resign
           zip -qr ../Resigned_App.ipa Payload
