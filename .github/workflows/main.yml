@@ -22,14 +22,14 @@ jobs:
 
           openssl pkcs12 -export -out cert.p12 -inkey private.key -in cert.pem -passout pass:123456
 
-          security create-keychain -p "" build.keychain
-          security import cert.p12 -k build.keychain -P "123456" -T /usr/bin/codesign
-          security list-keychains -d user -s build.keychain
-          security set-keychain-settings -t 3600 -u build.keychain
-          security unlock-keychain -p "" build.keychain
+          # 1. Создаем связку ключей с паролем "actions" и делаем ее основной
+          security create-keychain -p "actions" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "actions" build.keychain
           
-          # Та самая команда, которая убирает невидимое окно с вопросом "Разрешить?"
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" build.keychain
+          # 2. Импортируем с флагом -A (Разрешить всем программам брать ключ без вопросов)
+          security import cert.p12 -k build.keychain -P "123456" -A
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "actions" build.keychain
 
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           echo -n "$PROVISION_BASE64" | base64 --decode -o ~/Library/MobileDevice/Provisioning\ Profiles/resigned.mobileprovision
@@ -55,8 +55,12 @@ jobs:
           CERT_NAME=$(security find-identity -v -p codesigning build.keychain | grep '"' | head -1 | grep -o '".*"' | sed 's/"//g')
           echo "Использую сертификат: $CERT_NAME"
           
-          # Добавил флаг --deep на всякий случай, чтобы подписались все вложенные папки
-          /usr/bin/codesign --deep -f -s "$CERT_NAME" --entitlements entitlements.plist "$APP_PATH"
+          # 3. Аккуратно подписываем фреймворки (если они есть), чтобы codesign не завис
+          find "$APP_PATH/Frameworks" -type f -name "*.dylib" -exec /usr/bin/codesign -f -s "$CERT_NAME" {} \; 2>/dev/null || true
+          find "$APP_PATH/Frameworks" -type d -name "*.framework" -exec /usr/bin/codesign -f -s "$CERT_NAME" {} \; 2>/dev/null || true
+          
+          # 4. Подписываем само приложение
+          /usr/bin/codesign -f -s "$CERT_NAME" --entitlements entitlements.plist "$APP_PATH"
           
           cd temp_resign
           zip -qr ../Resigned_App.ipa Payload
