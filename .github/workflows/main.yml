@@ -48,8 +48,11 @@ jobs:
           cp ~/Library/MobileDevice/Provisioning\ Profiles/resigned.mobileprovision "$APP_PATH/embedded.mobileprovision"
           
           rm -rf "$APP_PATH/_CodeSignature"
-          CERT_NAME=$(security find-identity -v -p codesigning build.keychain | grep "Apple Distribution" | head -1 | grep -o '".*"' | sed 's/"//g')
+          
+          # Ищем ЛЮБОЙ сертификат в связке ключей (он там всего один)
+          CERT_NAME=$(security find-identity -v -p codesigning build.keychain | grep '"' | head -1 | grep -o '".*"' | sed 's/"//g')
           echo "Использую сертификат: $CERT_NAME"
+          
           /usr/bin/codesign -f -s "$CERT_NAME" --entitlements entitlements.plist "$APP_PATH"
           
           cd temp_resign
