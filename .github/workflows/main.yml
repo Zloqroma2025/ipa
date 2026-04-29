@@ -22,19 +22,17 @@ jobs:
 
           openssl pkcs12 -export -out cert.p12 -inkey private.key -in cert.pem -passout pass:123456
 
-          # 1. Создаем связку ключей с паролем "actions" и делаем ее основной
           security create-keychain -p "actions" build.keychain
           security default-keychain -s build.keychain
           security unlock-keychain -p "actions" build.keychain
           
-          # 2. Импортируем с флагом -A (Разрешить всем программам брать ключ без вопросов)
           security import cert.p12 -k build.keychain -P "123456" -A
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "actions" build.keychain
 
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           echo -n "$PROVISION_BASE64" | base64 --decode -o ~/Library/MobileDevice/Provisioning\ Profiles/resigned.mobileprovision
 
-      - name: 🛠 Resign IPA
+      - name: 🛠 Resign IPA and Replace Lottie
         env:
           OLD_BUNDLE_ID: "com.parts.fastauto"
         run: |
@@ -42,6 +40,21 @@ jobs:
           
           unzip -q "$IPA_NAME" -d temp_resign
           APP_PATH=$(find temp_resign/Payload -name "*.app")
+          
+          # === ШАГ ПОДМЕНЫ JSON-АНИМАЦИИ ===
+          if [ -f "splash_full.json" ]; then
+            echo "Найден полноэкранный JSON заставки (splash_full.json). Выполняю замену..."
+            
+            # Меняем анимацию для светлой темы
+            find "$APP_PATH" -name "splashAnimation.json" -exec cp -f splash_full.json {} \;
+            # Меняем анимацию для темной темы
+            find "$APP_PATH" -name "splashAnimationDark.json" -exec cp -f splash_full.json {} \;
+            
+            echo "Замена анимации успешно завершена."
+          else
+            echo "Файл splash_full.json не найден в корне репозитория. Замена пропущена."
+          fi
+          # ============================
           
           /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $OLD_BUNDLE_ID" "$APP_PATH/Info.plist"
           
@@ -55,11 +68,9 @@ jobs:
           CERT_NAME=$(security find-identity -v -p codesigning build.keychain | grep '"' | head -1 | grep -o '".*"' | sed 's/"//g')
           echo "Использую сертификат: $CERT_NAME"
           
-          # 3. Аккуратно подписываем фреймворки (если они есть), чтобы codesign не завис
           find "$APP_PATH/Frameworks" -type f -name "*.dylib" -exec /usr/bin/codesign -f -s "$CERT_NAME" {} \; 2>/dev/null || true
           find "$APP_PATH/Frameworks" -type d -name "*.framework" -exec /usr/bin/codesign -f -s "$CERT_NAME" {} \; 2>/dev/null || true
           
-          # 4. Подписываем само приложение
           /usr/bin/codesign -f -s "$CERT_NAME" --entitlements entitlements.plist "$APP_PATH"
           
           cd temp_resign
